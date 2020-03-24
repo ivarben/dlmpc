@@ -33,6 +33,8 @@ class DLMPC:
         for i in range(self.V):
             if i != self.V - 1:
                 self.agents[i].next = self.agents[i+1] # link agents to allow knowledge of who comes next
+            if i != 0:
+                self.agents[i].previous = self.agents[i-1] # link in reverse direction for back-communication
             self.agents[i].initiate_x_neighbours()
             self.agents[i].initiate_LSS() # initiate local safe sets
 
@@ -83,6 +85,8 @@ class DLMPC:
 
         for agent in self.agents:
             pl.plot(self.time, agent.x_trajectory[0,:,0])
-            print(agent.LSS)
+            print(agent.id)
+            print(agent.LSS[:,:agent.N])
+            print(agent.x_hat)
 
         pl.show()

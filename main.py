@@ -2,7 +2,7 @@ from dlmpc import *
 
 def main():
     T = 100
-    G = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]]) # 3 node path-graph
+    G = np.array([[1, 1, 0], [1, 1, 1], [0, 1, 1]]) # 3 node path-graph
     A = np.matrix("1, 1; 0, 1") # Double integrator
     B = np.matrix("0; 1")       # system dynamics
 
