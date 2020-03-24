@@ -1,7 +1,6 @@
 import numpy as np
 import scipy.linalg as la
-import gurobipy as gp
-from gurobipy import GRB
+import cvxpy as cp
 import matplotlib.pyplot as pl
 
 class Agent:
@@ -58,7 +57,7 @@ class Agent:
         return
 
     def evaluate_stage_cost(self, x, u):
-        return x@self.Q@x + u@self.R@u
+        return x@self.Q@x + np.array([0, -40])@x + 400 + 0.1*x[1]*x[1] + 0.1*x[1] + u@self.R@u
 
     def initiate_LSS(self): # Local Safe Set
         dim = 1 # space for ctg
@@ -67,7 +66,8 @@ class Agent:
             dim += agent.n # space for own and neighbours state variables
 
         self.LSS = np.empty([dim, 0]) # dim rows and 0 columns (yet)
-        self.LSSC = np.empty([self.m, 0]) # to store safe control associated with safe set
+        self.LSSC = np.empty([self.m, 0]) # to store safe control associated with LSS
+        self.SS = np.empty([1+self.n, 0]) # to store own safe states associated with LSS (and ctg)
 
     def append_LSS(self, j): # needs iteration number
         J0 = np.cumsum(self.stage_costs[:,:,j], axis = 1) # cumulative stage costs over time
@@ -79,6 +79,7 @@ class Agent:
 
         self.LSS = np.concatenate((self.LSS, entry), axis = 1)
         self.LSSC = np.concatenate((self.LSSC, self.u_trajectory[:,:,j]), axis = 1)
+        self.SS = np.concatenate((self.SS, np.concatenate((ctg, self.x_trajectory[:,:,j]), axis = 0)), axis = 1)
 
     def update(self, x, u):
         return self.A@x + self.B@u
@@ -101,11 +102,13 @@ class Agent:
                     self.step1(k)
             elif self.step_nr == 2:
                 self.step2(k)
+            elif self.step_nr == 3:
+                self.step3(k)
         else:
             self.previous.proceed(k)
 
     def step0(self):
-        self.x_hat = self.LSS[1 + self.sort(self.id)*self.n:1 + (self.sort(self.id)+1)*self.n,:self.N + 1]
+        self.x_hat = self.SS[1:,:self.N + 1] # take initial x_hat from safe set
         self.u_hat = self.LSSC[:,:self.N]
 
         for neighbour in self.neighbours:
@@ -129,6 +132,8 @@ class Agent:
                 planned = np.concatenate((planned, self.x_neighbours[:,self.N,i]), axis = 0)
 
         ctgs = [] # list of ctgs in case there are several matching elements in LSS
+
+
         for i in range(self.LSS.shape[1]):
             if np.array_equal(planned, self.LSS[1:,i]):
                 ctgs.append(self.LSS[0,i])
@@ -142,6 +147,52 @@ class Agent:
 
         if self.next is not None:
             self.next.step2(k)
+        else:
+            self.proceed(k)
+
+    def step3(self, k):
+        ### A ### Solve MPC problem
+        self.solve_MPC()
+        ### B ###
+
+        ### C ###
+
+        return
 
     def solve_MPC(self):
+        ### Idea: Subset LSS to those states that are compatible with neighbour states
+        ## TODO: FIX ORDER OF RESHAPING
+        x_neighbours_stacked = self.x_neighbours.reshape((self.x_neighbours.shape[0]*self.x_neighbours.shape[1]*self.x_neighbours.shape[2],))
+        print(x_neighbours_stacked)
+        SS_feasible = np.zeros((self.SS.shape[0], None)) # denotes safe terminal states
+
+        for i in range(self.LSS.shape[1]):
+            if np.array_equal(self.LSS[1:,i], x_neighbours_stacked): # compare states (not including ctg)
+                SS_feasible = np.concatenate((SS_feasible, self.SS[:,i]), axis = 1) # append state from SS (including ctg)
+
+        SS = cp.Parameter((SS_feasible.shape[0], SS_feasible.shape[1]), value = SS_feasible)
+        x_neighbours = cp.Parameter((self.x_neighbours.shape[0], self.x_neighbours.shape[1]), value = self.x_neighbours)
+        x = cp.Variable((self.n, self.N+1), value = np.matrix(np.zeros((self.n, self.N+1)))) # state variables
+        u = cp.Variable((self.m, self.N)) # control variables
+        delta = cp.Variable(SS_feasible.shape[1], boolean = True) ## Binary variable to model inclusion in discrete set
+
+        cost = 0
+        constr = []
+        for k in range(N):
+            constr += [x[:,k+1] == self.A@x[:,k] + self.B@u[:,k]]
+        for k in range(N):
+            for i in range(len(self.neighbours)):
+                if i != self.sort(self.id):
+                    constr += [(x[0,k] - x_neighbours[0,i])**2 >= 400]
+
+        cost += cp.sum(cp.multiply(delta, np.squeeze(SS.value[0,:]))) # terminal cost
+        constr += [cp.sum(delta) == 1] # only one terminal state
+        constr += [x[:,N] == SS[1:,:]@delta] # terminal state has to be in reduced LSS
+        constr += [x[:,0] == np.squeeze(self.x_hat[:,0])] # initial condition
+
+        problem = cp.Problem(cp.Minimize(cost), constr)
+        problem.solve(solver=cp.GUROBI)
+
+        print('success!')
+
         return

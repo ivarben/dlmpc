@@ -19,8 +19,8 @@ class DLMPC:
             self.xS.append(np.array([50*(self.V - i - 1), 0]))
             self.xF.append(np.array([self.xS[i] + 1000, 0]))
 
-        Q = np.array([[1, 0], [0, 1]])
-        R = np.array([[1]])
+        Q = np.array([[0, 0], [0, 1]])
+        R = np.array([[0]])
 
         for i in range(self.V): # append agent objects to agent list
             self.agents.append(Agent(i+1, self.A, self.B, Q, R, self.xS[i], self.xF[i], self.N, self.J, self.time)) # each with same dynamics but different tasks
@@ -86,7 +86,7 @@ class DLMPC:
         for agent in self.agents:
             pl.plot(self.time, agent.x_trajectory[0,:,0])
             print(agent.id)
-            print(agent.LSS[:,:agent.N])
+            print(agent.SS[:,:agent.N+1])
             print(agent.x_hat)
 
         pl.show()
