@@ -52,6 +52,7 @@ class Agent:
 
     def initiate_x_neighbours(self):
         self.x_neighbours = np.zeros((self.n, self.N+1, len(self.neighbours)))
+        self.x_neighbours_test = np.zeros((self.n, self.N+1, len(self.neighbours)))
 
     def update_x_neighbours(self):
         return
@@ -91,6 +92,27 @@ class Agent:
                 index += 1
         return index
 
+    def calculate_J_F(self, x_neighbours, x_pred, u_pred):
+        # F_old found from matching planned terminal state with ctg from LSS
+        for i in range(len(self.neighbours)):
+            if i == 0:
+                planned = x_neighbours[:,self.N,i]
+            else:
+                planned = np.concatenate((planned, x_neighbours[:,self.N,i]), axis = 0)
+
+        ctgs = [] # list of ctgs in case there are several matching elements in LSS
+        for i in range(self.LSS.shape[1]):
+            if np.array_equal(planned, self.LSS[1:,i]):
+                ctgs.append(self.LSS[0,i])
+        F = min(ctgs)
+
+        stage_costs = np.zeros(self.N-1)
+        for i in range(stage_costs.shape[0]):
+            stage_costs[i] = self.evaluate_stage_cost(x_pred[:,i], u_pred[:,i]) # evaluate stage costs for hat variables
+        J = np.sum(stage_costs) + F # evaluate total costs for hat variables
+
+        return J, F
+
     def proceed(self, k):
         self.step_nr += 1
 
@@ -104,6 +126,8 @@ class Agent:
                 self.step2(k)
             elif self.step_nr == 3:
                 self.step3(k)
+            elif self.step_nr == 4:
+                self.step4(k)
         else:
             self.previous.proceed(k)
 
@@ -124,26 +148,8 @@ class Agent:
         return
 
     def step2(self, k): # compute J_old and F_old
-        # F_old found from matching planned terminal state with ctg from LSS
-        for i in range(len(self.neighbours)):
-            if i == 0:
-                planned = self.x_neighbours[:,self.N,i]
-            else:
-                planned = np.concatenate((planned, self.x_neighbours[:,self.N,i]), axis = 0)
 
-        ctgs = [] # list of ctgs in case there are several matching elements in LSS
-
-
-        for i in range(self.LSS.shape[1]):
-            if np.array_equal(planned, self.LSS[1:,i]):
-                ctgs.append(self.LSS[0,i])
-        self.F_old = min(ctgs)
-
-        stage_costs = np.zeros(self.N-1)
-        for i in range(stage_costs.shape[0]):
-            stage_costs[i] = self.evaluate_stage_cost(self.x_hat[:,i], self.u_hat[:,i]) # evaluate stage costs for hat variables
-
-        self.J_old = np.sum(stage_costs) + self.F_old # evaluate total costs for hat variables
+        self.J_old, self.F_old = self.calculate_J_F(self.x_neighbours, self.x_hat, self.u_hat)
 
         if self.next is not None:
             self.next.step2(k)
@@ -152,47 +158,93 @@ class Agent:
 
     def step3(self, k):
         ### A ### Solve MPC problem
-        self.solve_MPC()
-        ### B ###
+        self.x_test, self.u_test, self.J_test, self.F_test = self.solve_MPC()
+        ### B ### Let neigbours calculate resulting costs
+        for neighbour in self.neighbours:
+            neighbour.x_neighbours_test = neighbour.x_neighbours # x_neighbours_test should be the same as x_neighbours...
+            neighbour.x_neighbours_test[:,:,neighbour.sort(self.id)] = self.x_test # ... but with updated information from the current agent
 
-        ### C ###
+            if neighbour.id < self.id:
+                neighbour.x_bar = neighbour.x_star
+                neighbour.u_bar = neighbour.u_star
+            else:
+                neighbour.x_bar = neighbour.x_hat
+                neighbour.u_bar = neighbour.u_hat
 
+            # calculate F and J
+            neighbour.J_test, neighbour.F_test = neighbour.calculate_J_F(neighbour.x_neighbours_test, neighbour.x_bar, neighbour.u_bar)
+
+        ### C ### Neighbours give feedback
+        ### B and C can be combined in one loop for efficiency
+
+        d = self.J_test - self.J_old # own total cost change
+        e = self.F_test - self.F_old # own terminal cost change
+
+        for neighbour in self.neighbours:
+            d += (neighbour.J_test - neighbour.J_old)
+            e += (neighbour.F_test - neighbour.F_old)
+
+        check = (d <= 0 and e <= 0) ## Bool to check conditions if a decrease in both total and termnal cost of the overall system was reached
+        if check: # Use optimized variables
+            self.x_star = self.x_test
+            self.u_star = self.u_test
+            flag = 1
+        else: # use old, hat variables
+            self.x_star = self.x_hat
+            self.u_star = self.u_hat
+            flag = 0
+        ### D ### Neighbours update info from self
+        for neighbour in self.neighbours:
+            if flag == 1:
+                neighbour.x_neighbours = neighbour.x_neighbours_test
+                neighbour.J_old = neighbour.J_test
+                neighbour.F_old = neighbour.F_test
+
+        if self.next is not None:
+            self.next.step3(k)
+        else:
+            self.proceed(k)
+
+    def step4(self, k):
         return
 
     def solve_MPC(self):
         ### Idea: Subset LSS to those states that are compatible with neighbour states
-        ## TODO: FIX ORDER OF RESHAPING
-        x_neighbours_stacked = self.x_neighbours.reshape((self.x_neighbours.shape[0]*self.x_neighbours.shape[1]*self.x_neighbours.shape[2],))
-        print(x_neighbours_stacked)
-        SS_feasible = np.zeros((self.SS.shape[0], None)) # denotes safe terminal states
+        x_neighbours_stacked = self.x_neighbours[:,:,0]
+        for i in range(1, self.x_neighbours.shape[2]): ### Not super neat, fix with np.reshape() if possible
+            x_neighbours_stacked = np.concatenate((x_neighbours_stacked, self.x_neighbours[:,:,i]), axis = 0)
+
+        SS_feasible = np.zeros((self.SS.shape[0], 0)) # denotes safe terminal states
 
         for i in range(self.LSS.shape[1]):
-            if np.array_equal(self.LSS[1:,i], x_neighbours_stacked): # compare states (not including ctg)
-                SS_feasible = np.concatenate((SS_feasible, self.SS[:,i]), axis = 1) # append state from SS (including ctg)
+            if np.array_equal(self.LSS[1:,i], x_neighbours_stacked[:,self.N]): # compare states (not including ctg)
+                SS_feasible = np.concatenate((SS_feasible, self.SS[:,[i]]), axis = 1) # append state from SS (including ctg)
 
         SS = cp.Parameter((SS_feasible.shape[0], SS_feasible.shape[1]), value = SS_feasible)
-        x_neighbours = cp.Parameter((self.x_neighbours.shape[0], self.x_neighbours.shape[1]), value = self.x_neighbours)
-        x = cp.Variable((self.n, self.N+1), value = np.matrix(np.zeros((self.n, self.N+1)))) # state variables
+        x_neighbours = cp.Parameter((x_neighbours_stacked.shape[0], x_neighbours_stacked.shape[1]), value = x_neighbours_stacked)
+        x = cp.Variable((self.n, self.N+1)) # state variables
         u = cp.Variable((self.m, self.N)) # control variables
         delta = cp.Variable(SS_feasible.shape[1], boolean = True) ## Binary variable to model inclusion in discrete set
 
-        cost = 0
+        stage_costs = 0
         constr = []
-        for k in range(N):
-            constr += [x[:,k+1] == self.A@x[:,k] + self.B@u[:,k]]
-        for k in range(N):
-            for i in range(len(self.neighbours)):
-                if i != self.sort(self.id):
-                    constr += [(x[0,k] - x_neighbours[0,i])**2 >= 400]
+        for k in range(self.N):
+            constr += [x[:,k+1] == self.A@x[:,k] + self.B@u[:,k]] # Dynamics
+            stage_costs += cp.quad_form(x[:,k], self.Q) + np.array([0, -40])@x[:,k] + 400 + 0.1*x[1,k] + cp.quad_form(u[:,k], self.R) # stage costs
 
-        cost += cp.sum(cp.multiply(delta, np.squeeze(SS.value[0,:]))) # terminal cost
+        for k in range(self.N):
+            for i in range(len(self.neighbours)):
+                if i > self.sort(self.id):
+                    constr += [x[0,k] - x_neighbours[i*self.n,k] >= 20]
+                elif i < self.sort(self.id):
+                    constr += [x_neighbours[i*self.n,k] - x[0,k] >= 20]
+
+        terminal_cost = cp.sum(cp.multiply(delta, np.squeeze(SS.value[0,:]))) # terminal cost
         constr += [cp.sum(delta) == 1] # only one terminal state
-        constr += [x[:,N] == SS[1:,:]@delta] # terminal state has to be in reduced LSS
+        constr += [x[:,self.N] == SS[1:,:]@delta] # terminal state has to be in reduced LSS
         constr += [x[:,0] == np.squeeze(self.x_hat[:,0])] # initial condition
 
-        problem = cp.Problem(cp.Minimize(cost), constr)
+        problem = cp.Problem(cp.Minimize(stage_costs + terminal_cost), constr)
         problem.solve(solver=cp.GUROBI)
 
-        print('success!')
-
-        return
+        return x.value, u.value, problem.value, terminal_cost.value
