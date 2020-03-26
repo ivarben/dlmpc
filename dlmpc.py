@@ -38,7 +38,7 @@ class DLMPC:
             self.agents[i].initiate_x_neighbours()
             self.agents[i].initiate_LSS() # initiate local safe sets
 
-    def iteration_0(self):
+    def iteration_0(self): ### Create LSS for each agent (can be done arbitrarily)
         for agent in self.agents:
             agent.x_trajectory[:,0,0] = agent.xS
             agent.u_trajectory[:,0,0] = 10 # hardcoded acceleration
@@ -64,21 +64,14 @@ class DLMPC:
         ## doesn't start until it has received the information from one, and so on.
         ## ROS? Event handling? Observer pattern?
 
-    def iterate(self):
-        # Step 0
-        self.agents[0].step0()
-
-        for t in self.time[1:]:
-            pass
-            # Step 3
-            #self.agents[0].optimize() #
-            # call comunicate() (basically the DMPC algorithm from the paper)
+    def iterate(self, j):
+        self.agents[0].step0(j)
 
     def solve(self):
         self.iteration_0()
-        for j in range(self.J): # Iteration number j+1
-            self.iterate()
-        return
+
+        for j in range(1, self.J+1): # Iteration number j
+            self.iterate(j)
 
     def plot(self):
         pl.figure()

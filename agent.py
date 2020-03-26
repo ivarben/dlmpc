@@ -31,8 +31,8 @@ class Agent:
         self.x_hat = np.zeros((self.n, self.N + 1)) # candidate state prediction
         self.u_hat = np.zeros((self.m, self.N)) # candidate control prediction
 
-        self.x_star = np.zeros((self.n, self.N + 1, time.shape[0])) # optimal state prediction (saves all time steps)
-        self.u_star = np.zeros((self.m, self.N, time.shape[0])) # optimal control prediction (saves all time steps)
+        self.x_star = np.zeros((self.n, self.N + 1)) # optimal state prediction (saves all time steps)
+        self.u_star = np.zeros((self.m, self.N)) # optimal control prediction (saves all time steps)
 
         self.x_test = np.zeros((self.n, self.N + 1)) # state solution to MPC problem
         self.u_test = np.zeros((self.m, self.N)) # control solution to MPC problem
@@ -113,25 +113,30 @@ class Agent:
 
         return J, F
 
-    def proceed(self, k):
+    def proceed(self, j, k):
         self.step_nr += 1
 
         if self.previous is None:
             if self.step_nr == 1:
                 if k == 0:
-                    self.step2(k)
+                    self.step2(j, k)
                 else:
-                    self.step1(k)
+                    self.step1(j, k)
             elif self.step_nr == 2:
-                self.step2(k)
+                self.step2(j, k)
             elif self.step_nr == 3:
-                self.step3(k)
+                self.step3(j, k)
             elif self.step_nr == 4:
-                self.step4(k)
+                self.step4(j, k)
+            elif self.step_nr == 5:
+                self.step5(j, k)
+            elif self.step_nr == 6:
+                self.step_nr = 1
+                self.step1(j, k)
         else:
-            self.previous.proceed(k)
+            self.previous.proceed(j, k)
 
-    def step0(self):
+    def step0(self, j):
         self.x_hat = self.SS[1:,:self.N + 1] # take initial x_hat from safe set
         self.u_hat = self.LSSC[:,:self.N]
 
@@ -139,24 +144,50 @@ class Agent:
             neighbour.x_neighbours[:,:,neighbour.sort(self.id)] = self.x_hat
 
         if self.next is None:
-            self.proceed(0)
+            self.proceed(j, 0)
         else:
-            self.next.step0()
+            self.next.step0(j)
 
-    def step1(self, k):
+    def step1(self, j, k):
         # update hat variables and send, similar to step 0
-        return
+        for i in range(len(self.neighbours)):
+            if i == 0:
+                last_x = self.x_neighbours[:,self.N,i]
+            else:
+                last_x = np.concatenate((last_x, self.x_neighbours[:,self.N,i]), axis = 0)  # look in safe set for this state
 
-    def step2(self, k): # compute J_old and F_old
+        print(self.id)
+        print(self.LSS[1:,:6])
+        print(last_x)
+        for i in range(self.LSS.shape[1]):
+            if np.array_equal(last_x, self.LSS[1:,i]):
+                appended_control = self.LSSC[:,[i]]
+                appended_state = self.update(self.x_star[:,[-1]], appended_control)
+                break ### Only looks for first matching state. Could be changed to look for cheapest if needed.
+
+        self.u_hat = np.concatenate((self.u_star[:,1:], appended_control), axis = 1) #shifted and appended
+        self.x_hat = np.concatenate((self.x_star[:,1:], appended_state), axis = 1) #shifted and appended
+
+        ### TODO: Fix this weird dependency by adding an extra step (or some other smart way)
+        ### Send state prediction to neighbours
+        for neighbour in self.neighbours:
+            neighbour.x_neighbours[:,:,neighbour.sort(self.id)] = self.x_hat
+
+        if self.next is None:
+            self.proceed(j, k)
+        else:
+            self.next.step1(j, k)
+
+    def step2(self, j, k): # compute J_old and F_old
 
         self.J_old, self.F_old = self.calculate_J_F(self.x_neighbours, self.x_hat, self.u_hat)
 
         if self.next is not None:
-            self.next.step2(k)
+            self.next.step2(j, k)
         else:
-            self.proceed(k)
+            self.proceed(j, k)
 
-    def step3(self, k):
+    def step3(self, j, k):
         ### A ### Solve MPC problem
         self.x_test, self.u_test, self.J_test, self.F_test = self.solve_MPC()
         ### B ### Let neigbours calculate resulting costs
@@ -201,12 +232,26 @@ class Agent:
                 neighbour.F_old = neighbour.F_test
 
         if self.next is not None:
-            self.next.step3(k)
+            self.next.step3(j, k)
         else:
-            self.proceed(k)
+            self.proceed(j, k)
 
-    def step4(self, k):
-        return
+    def step4(self, j, k):
+        ### Apply the optimized controls
+        self.u_trajectory[:,k,j] = self.u_star[:,0]
+        self.x_trajectory[:,k,j] = self.x_star[:,0]
+
+        if self.next is not None:
+            self.next.step4(j, k)
+        else:
+            self.proceed(j, k)
+
+    def step5(self, j, k): ### Increment k and go to step 1
+        print(self.LSS[1:,:6])
+        if self.next is not None:
+            self.next.step5(j, k)
+        else:
+            self.proceed(j, k+1)
 
     def solve_MPC(self):
         ### Idea: Subset LSS to those states that are compatible with neighbour states
@@ -215,7 +260,6 @@ class Agent:
             x_neighbours_stacked = np.concatenate((x_neighbours_stacked, self.x_neighbours[:,:,i]), axis = 0)
 
         SS_feasible = np.zeros((self.SS.shape[0], 0)) # denotes safe terminal states
-
         for i in range(self.LSS.shape[1]):
             if np.array_equal(self.LSS[1:,i], x_neighbours_stacked[:,self.N]): # compare states (not including ctg)
                 SS_feasible = np.concatenate((SS_feasible, self.SS[:,[i]]), axis = 1) # append state from SS (including ctg)
