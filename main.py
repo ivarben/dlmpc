@@ -6,8 +6,8 @@ def main():
     A = np.matrix("1, 1; 0, 1") # Double integrator
     B = np.matrix("0; 1")       # system dynamics
 
-    N = 3 # control/ prediction horizon
-    J = 1 # Number of iterations of LMPC
+    N = 5 # control/ prediction horizon
+    J = 2 # Number of iterations of LMPC
 
     dlmpc = DLMPC(T, G, A, B, N, J) # DLMPC instance
 

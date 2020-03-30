@@ -54,11 +54,8 @@ class Agent:
         self.x_neighbours = np.zeros((self.n, self.N+1, len(self.neighbours)))
         self.x_neighbours_test = np.zeros((self.n, self.N+1, len(self.neighbours)))
 
-    def update_x_neighbours(self):
-        return
-
     def evaluate_stage_cost(self, x, u):
-        return x@self.Q@x + np.array([0, -40])@x + 400 + 0.1*x[1]*x[1] + 0.1*x[1] + u@self.R@u
+        return x.T@self.Q@x + np.array([-2*self.xF[0], 0])@x + self.xF[0]**2 + u.T@self.R@u
 
     def initiate_LSS(self): # Local Safe Set
         dim = 1 # space for ctg
@@ -113,15 +110,11 @@ class Agent:
 
         return J, F
 
-    def proceed(self, j, k):
-        self.step_nr += 1
+    def proceed(self, j, k): ### FIX ORDER TO AVOID RECURSION
 
         if self.previous is None:
             if self.step_nr == 1:
-                if k == 0:
-                    self.step2(j, k)
-                else:
-                    self.step1(j, k)
+                self.step1(j, k)
             elif self.step_nr == 2:
                 self.step2(j, k)
             elif self.step_nr == 3:
@@ -130,9 +123,7 @@ class Agent:
                 self.step4(j, k)
             elif self.step_nr == 5:
                 self.step5(j, k)
-            elif self.step_nr == 6:
-                self.step_nr = 1
-                self.step1(j, k)
+
         else:
             self.previous.proceed(j, k)
 
@@ -143,10 +134,11 @@ class Agent:
         for neighbour in self.neighbours:
             neighbour.x_neighbours[:,:,neighbour.sort(self.id)] = self.x_hat
 
-        if self.next is None:
-            self.proceed(j, 0)
-        else:
+        self.step_nr = 2
+        if self.next is not None:
             self.next.step0(j)
+        else:
+            self.proceed(j, 0)
 
     def step1(self, j, k):
         # update hat variables and send, similar to step 0
@@ -156,9 +148,6 @@ class Agent:
             else:
                 last_x = np.concatenate((last_x, self.x_neighbours[:,self.N,i]), axis = 0)  # look in safe set for this state
 
-        print(self.id)
-        print(self.LSS[1:,:6])
-        print(last_x)
         for i in range(self.LSS.shape[1]):
             if np.array_equal(last_x, self.LSS[1:,i]):
                 appended_control = self.LSSC[:,[i]]
@@ -168,20 +157,27 @@ class Agent:
         self.u_hat = np.concatenate((self.u_star[:,1:], appended_control), axis = 1) #shifted and appended
         self.x_hat = np.concatenate((self.x_star[:,1:], appended_state), axis = 1) #shifted and appended
 
-        ### TODO: Fix this weird dependency by adding an extra step (or some other smart way)
+        if self.next is None:
+            self.step_1_5(j, k)
+        else:
+            self.next.step1(j, k)
+
+    def step_1_5(self, j, k):
+        self.step_nr += 1
+
         ### Send state prediction to neighbours
         for neighbour in self.neighbours:
             neighbour.x_neighbours[:,:,neighbour.sort(self.id)] = self.x_hat
 
-        if self.next is None:
-            self.proceed(j, k)
+        if self.previous is None:
+            self.step2(j, k)
         else:
-            self.next.step1(j, k)
+            self.previous.step_1_5(j, k)
 
     def step2(self, j, k): # compute J_old and F_old
-
         self.J_old, self.F_old = self.calculate_J_F(self.x_neighbours, self.x_hat, self.u_hat)
 
+        self.step_nr += 1
         if self.next is not None:
             self.next.step2(j, k)
         else:
@@ -231,6 +227,7 @@ class Agent:
                 neighbour.J_old = neighbour.J_test
                 neighbour.F_old = neighbour.F_test
 
+        self.step_nr += 1
         if self.next is not None:
             self.next.step3(j, k)
         else:
@@ -239,19 +236,11 @@ class Agent:
     def step4(self, j, k):
         ### Apply the optimized controls
         self.u_trajectory[:,k,j] = self.u_star[:,0]
-        self.x_trajectory[:,k,j] = self.x_star[:,0]
+        self.x_trajectory[:,k,j] = np.ravel(self.x_star[:,0])
 
+        self.step_nr = 1
         if self.next is not None:
             self.next.step4(j, k)
-        else:
-            self.proceed(j, k)
-
-    def step5(self, j, k): ### Increment k and go to step 1
-        print(self.LSS[1:,:6])
-        if self.next is not None:
-            self.next.step5(j, k)
-        else:
-            self.proceed(j, k+1)
 
     def solve_MPC(self):
         ### Idea: Subset LSS to those states that are compatible with neighbour states
@@ -273,8 +262,10 @@ class Agent:
         stage_costs = 0
         constr = []
         for k in range(self.N):
-            constr += [x[:,k+1] == self.A@x[:,k] + self.B@u[:,k]] # Dynamics
-            stage_costs += cp.quad_form(x[:,k], self.Q) + np.array([0, -40])@x[:,k] + 400 + 0.1*x[1,k] + cp.quad_form(u[:,k], self.R) # stage costs
+            constr +=  [x[:,k+1] == self.A@x[:,k] + self.B@u[:,k], # Dynamics
+                        #x[1,k] >= -40, # no going backwards
+                        x[1,k] <= 50] # speed limit
+            stage_costs += cp.quad_form(x[:,k], self.Q) + np.array([-2*self.xF[0], 0])@x[:,k] + self.xF[0]**2 + cp.quad_form(u[:,k], self.R) # stage costs
 
         for k in range(self.N):
             for i in range(len(self.neighbours)):
@@ -286,7 +277,7 @@ class Agent:
         terminal_cost = cp.sum(cp.multiply(delta, np.squeeze(SS.value[0,:]))) # terminal cost
         constr += [cp.sum(delta) == 1] # only one terminal state
         constr += [x[:,self.N] == SS[1:,:]@delta] # terminal state has to be in reduced LSS
-        constr += [x[:,0] == np.squeeze(self.x_hat[:,0])] # initial condition
+        constr += [x[:,0] == np.ravel(self.x_hat[:,0])] # initial condition
 
         problem = cp.Problem(cp.Minimize(stage_costs + terminal_cost), constr)
         problem.solve(solver=cp.GUROBI)

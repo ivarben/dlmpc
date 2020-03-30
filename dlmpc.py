@@ -16,10 +16,12 @@ class DLMPC:
         self.xF = [] # Goal state of the respective agents
 
         for i in range(self.V): # hardcoding to decide some initial and final states
-            self.xS.append(np.array([50*(self.V - i - 1), 0]))
-            self.xF.append(np.array([self.xS[i] + 1000, 0]))
+            xS = np.array([50*(self.V - i - 1), 0])
+            xF = np.array([xS[0] + 990, 0])
+            self.xS.append(xS)
+            self.xF.append(xF)
 
-        Q = np.array([[0, 0], [0, 1]])
+        Q = np.array([[1, 0], [0, 0]])
         R = np.array([[1]])
 
         for i in range(self.V): # append agent objects to agent list
@@ -48,7 +50,7 @@ class DLMPC:
             for agent in self.agents: # same for each agent
                 agent.x_trajectory[:,t,0] = agent.update(agent.x_trajectory[:,t-1,0], agent.u_trajectory[:,t-1,0]) # Dynamics
 
-                if t != self.time.shape[0] - 1:
+                if t != self.time.shape[0] - 2:
                     agent.u_trajectory[:,t,0] = 0 # hardcoded acceleration
                 else:
                     agent.u_trajectory[:,t,0] = -10 # hardcoded acceleration
@@ -58,14 +60,15 @@ class DLMPC:
         for agent in self.agents:
             agent.append_LSS(0)
 
-        ### Note:: Should DLMPC be able to access agent variables?
-        ## For SS0 it doesn't really matter, don't have to scrap this code.
-        ## But for the rest of the algorithm, it should be compoletely decentralized. I.e. agent 1 starts doing its stuff and agent 2
-        ## doesn't start until it has received the information from one, and so on.
-        ## ROS? Event handling? Observer pattern?
-
     def iterate(self, j):
         self.agents[0].step0(j)
+
+        for t in self.time[1:]: # t = 1, 2, ...
+            print(t)
+            self.agents[0].step1(j, t)
+
+        for agent in self.agents:
+            agent.append_LSS(j)
 
     def solve(self):
         self.iteration_0()
@@ -78,5 +81,8 @@ class DLMPC:
 
         for agent in self.agents:
             pl.plot(self.time, agent.x_trajectory[0,:,0])
+            pl.plot(self.time, agent.x_trajectory[0,:,1])
+            pl.plot(self.time, agent.x_trajectory[0,:,2])
+            
 
         pl.show()
