@@ -21,10 +21,11 @@ class DLMPC:
             self.xS.append(xS)
             self.xF.append(xF)
 
-        Q = np.array([[1, 0], [0, 0]])
-        R = np.array([[1]])
+        Q = np.array([[2, 0], [0, 0]])
+        R = np.array([[3]])
 
         for i in range(self.V): # append agent objects to agent list
+            #+i*np.array([[1,0],[0,0]])
             self.agents.append(Agent(i+1, self.A, self.B, Q, R, self.xS[i], self.xF[i], self.N, self.J, self.time)) # each with same dynamics but different tasks
 
         for i in range(self.V):
@@ -64,7 +65,7 @@ class DLMPC:
         self.agents[0].step0(j)
 
         for t in self.time[1:]: # t = 1, 2, ...
-            print(t)
+            print('t = ' + str(t))
             self.agents[0].step1(j, t)
 
         for agent in self.agents:
@@ -79,10 +80,11 @@ class DLMPC:
     def plot(self):
         pl.figure()
 
-        for agent in self.agents:
-            pl.plot(self.time, agent.x_trajectory[0,:,0])
-            pl.plot(self.time, agent.x_trajectory[0,:,1])
-            pl.plot(self.time, agent.x_trajectory[0,:,2])
-            
+        for j in range(self.J+1):
+            cost = 0
+            for agent in self.agents:
+                pl.plot(self.time, agent.x_trajectory[0,:,j])
+            cost += np.sum(agent.stage_costs[0,:,j])
+            print(cost)
 
         pl.show()

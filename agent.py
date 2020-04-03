@@ -55,7 +55,7 @@ class Agent:
         self.x_neighbours_test = np.zeros((self.n, self.N+1, len(self.neighbours)))
 
     def evaluate_stage_cost(self, x, u):
-        return x.T@self.Q@x + np.array([-2*self.xF[0], 0])@x + self.xF[0]**2 + u.T@self.R@u
+        return (x - self.xF).T@self.Q@(x - self.xF) + u.T@self.R@u
 
     def initiate_LSS(self): # Local Safe Set
         dim = 1 # space for ctg
@@ -99,19 +99,18 @@ class Agent:
 
         ctgs = [] # list of ctgs in case there are several matching elements in LSS
         for i in range(self.LSS.shape[1]):
-            if np.array_equal(planned, self.LSS[1:,i]):
+            if np.linalg.norm(planned - self.LSS[1:,i]) < 1e-3 :
                 ctgs.append(self.LSS[0,i])
         F = min(ctgs)
 
         stage_costs = np.zeros(self.N-1)
         for i in range(stage_costs.shape[0]):
-            stage_costs[i] = self.evaluate_stage_cost(x_pred[:,i], u_pred[:,i]) # evaluate stage costs for hat variables
+            stage_costs[i] = self.evaluate_stage_cost(np.ravel(x_pred[:,i]), u_pred[:,i]) # evaluate stage costs for hat variables
         J = np.sum(stage_costs) + F # evaluate total costs for hat variables
 
         return J, F
 
-    def proceed(self, j, k): ### FIX ORDER TO AVOID RECURSION
-
+    def proceed(self, j, k):
         if self.previous is None:
             if self.step_nr == 1:
                 self.step1(j, k)
@@ -123,13 +122,15 @@ class Agent:
                 self.step4(j, k)
             elif self.step_nr == 5:
                 self.step5(j, k)
-
         else:
             self.previous.proceed(j, k)
 
     def step0(self, j):
-        self.x_hat = self.SS[1:,:self.N + 1] # take initial x_hat from safe set
-        self.u_hat = self.LSSC[:,:self.N]
+        #self.x_hat = self.SS[1:,:self.N + 1] # take initial x_hat from safe set
+        #self.u_hat = self.LSSC[:,:self.N]
+        self.x_hat = self.SS[1:,(j-1)*101:(j-1)*101 + self.N + 1] # take initial x_hat from safe set
+        self.u_hat = self.LSSC[:,(j-1)*101:(j-1)*101 + self.N]
+        ## This part is a bit problematic...
 
         for neighbour in self.neighbours:
             neighbour.x_neighbours[:,:,neighbour.sort(self.id)] = self.x_hat
@@ -142,17 +143,18 @@ class Agent:
 
     def step1(self, j, k):
         # update hat variables and send, similar to step 0
-        for i in range(len(self.neighbours)):
-            if i == 0:
-                last_x = self.x_neighbours[:,self.N,i]
-            else:
-                last_x = np.concatenate((last_x, self.x_neighbours[:,self.N,i]), axis = 0)  # look in safe set for this state
+        last_x = self.x_neighbours[:,self.N,0]
+        for i in range(1, len(self.neighbours)):
+            last_x = np.concatenate((last_x, self.x_neighbours[:,self.N,i]), axis = 0)  # look in safe set for this state
 
+        options = {} # dictionary to store costs and indicies of safe states with known safe controls
         for i in range(self.LSS.shape[1]):
-            if np.array_equal(last_x, self.LSS[1:,i]):
-                appended_control = self.LSSC[:,[i]]
-                appended_state = self.update(self.x_star[:,[-1]], appended_control)
-                break ### Only looks for first matching state. Could be changed to look for cheapest if needed.
+            if np.linalg.norm(last_x - self.LSS[1:,i]) < 1e-3:
+                options[i] = self.LSS[0,i] # cost value can be found at index key
+
+        index = min(options, key = options.get)
+        appended_control = self.LSSC[:,[index]]
+        appended_state = self.update(self.x_star[:,[-1]], appended_control)
 
         self.u_hat = np.concatenate((self.u_star[:,1:], appended_control), axis = 1) #shifted and appended
         self.x_hat = np.concatenate((self.x_star[:,1:], appended_state), axis = 1) #shifted and appended
@@ -200,22 +202,20 @@ class Agent:
 
             # calculate F and J
             neighbour.J_test, neighbour.F_test = neighbour.calculate_J_F(neighbour.x_neighbours_test, neighbour.x_bar, neighbour.u_bar)
-
         ### C ### Neighbours give feedback
         ### B and C can be combined in one loop for efficiency
-
         d = self.J_test - self.J_old # own total cost change
         e = self.F_test - self.F_old # own terminal cost change
 
         for neighbour in self.neighbours:
-            d += (neighbour.J_test - neighbour.J_old)
-            e += (neighbour.F_test - neighbour.F_old)
+            if self.id != neighbour.id:
+                d += (neighbour.J_test - neighbour.J_old)
+                e += (neighbour.F_test - neighbour.F_old)
 
-        check = (d <= 0 and e <= 0) ## Bool to check conditions if a decrease in both total and termnal cost of the overall system was reached
-        if check: # Use optimized variables
+        if d <= 0 and e <= 0: ## Bool to check conditions if a decrease in both total and termnal cost of the overall system was reached
             self.x_star = self.x_test
             self.u_star = self.u_test
-            flag = 1
+            flag = 1 # Use optimized variables
         else: # use old, hat variables
             self.x_star = self.x_hat
             self.u_star = self.u_hat
@@ -237,6 +237,7 @@ class Agent:
         ### Apply the optimized controls
         self.u_trajectory[:,k,j] = self.u_star[:,0]
         self.x_trajectory[:,k,j] = np.ravel(self.x_star[:,0])
+        self.stage_costs[:,k,j] = self.evaluate_stage_cost(np.ravel(self.x_star[:,0]), self.u_star[:,0])
 
         self.step_nr = 1
         if self.next is not None:
@@ -250,7 +251,7 @@ class Agent:
 
         SS_feasible = np.zeros((self.SS.shape[0], 0)) # denotes safe terminal states
         for i in range(self.LSS.shape[1]):
-            if np.array_equal(self.LSS[1:,i], x_neighbours_stacked[:,self.N]): # compare states (not including ctg)
+            if np.linalg.norm(self.LSS[1:,i] - x_neighbours_stacked[:,self.N]) < 1e-3: # compare states (not including ctg)
                 SS_feasible = np.concatenate((SS_feasible, self.SS[:,[i]]), axis = 1) # append state from SS (including ctg)
 
         SS = cp.Parameter((SS_feasible.shape[0], SS_feasible.shape[1]), value = SS_feasible)
@@ -263,9 +264,11 @@ class Agent:
         constr = []
         for k in range(self.N):
             constr +=  [x[:,k+1] == self.A@x[:,k] + self.B@u[:,k], # Dynamics
-                        #x[1,k] >= -40, # no going backwards
+                        u[:,k] <= 20,
+                        u[:,k] >= -20,
+                        x[1,k] >= 0, # no going backwards
                         x[1,k] <= 50] # speed limit
-            stage_costs += cp.quad_form(x[:,k], self.Q) + np.array([-2*self.xF[0], 0])@x[:,k] + self.xF[0]**2 + cp.quad_form(u[:,k], self.R) # stage costs
+            stage_costs += cp.quad_form(x[:,k] - self.xF, self.Q) + cp.quad_form(u[:,k], self.R) # stage costs
 
         for k in range(self.N):
             for i in range(len(self.neighbours)):
