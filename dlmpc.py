@@ -21,8 +21,8 @@ class DLMPC:
             self.xS.append(xS)
             self.xF.append(xF)
 
-        Q = np.array([[2, 0], [0, 0]])
-        R = np.array([[3]])
+        Q = np.array([[1, 0], [0, 1]])
+        R = np.array([[0]])
 
         for i in range(self.V): # append agent objects to agent list
             #+i*np.array([[1,0],[0,0]])
@@ -44,7 +44,7 @@ class DLMPC:
     def iteration_0(self): ### Create LSS for each agent (can be done arbitrarily)
         for agent in self.agents:
             agent.x_trajectory[:,0,0] = agent.xS
-            agent.u_trajectory[:,0,0] = 10 # hardcoded acceleration
+            agent.u_trajectory[:,0,0] = 10 - agent.id * 3 # hardcoded acceleration
             agent.stage_costs[:,0,0] = agent.evaluate_stage_cost(agent.x_trajectory[:,0,0], agent.u_trajectory[:,0,0])
 
         for t in self.time[1:]: # iterate time
@@ -54,7 +54,7 @@ class DLMPC:
                 if t != self.time.shape[0] - 2:
                     agent.u_trajectory[:,t,0] = 0 # hardcoded acceleration
                 else:
-                    agent.u_trajectory[:,t,0] = -10 # hardcoded acceleration
+                    agent.u_trajectory[:,t,0] = -(10 - agent.id * 3) # hardcoded acceleration
 
                 agent.stage_costs[0,t,0] = agent.evaluate_stage_cost(agent.x_trajectory[:,t,0], agent.u_trajectory[:,t,0])
 
@@ -83,7 +83,11 @@ class DLMPC:
         for j in range(self.J+1):
             cost = 0
             for agent in self.agents:
+                pl.subplot(2,1,1)
                 pl.plot(self.time, agent.x_trajectory[0,:,j])
+                pl.subplot(2,1,2)
+                pl.plot(self.time, agent.u_trajectory[0,:,j])
+
             cost += np.sum(agent.stage_costs[0,:,j])
             print(cost)
 

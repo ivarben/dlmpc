@@ -101,6 +101,7 @@ class Agent:
         for i in range(self.LSS.shape[1]):
             if np.linalg.norm(planned - self.LSS[1:,i]) < 1e-3 :
                 ctgs.append(self.LSS[0,i])
+
         F = min(ctgs)
 
         stage_costs = np.zeros(self.N-1)
@@ -238,7 +239,8 @@ class Agent:
         self.u_trajectory[:,k,j] = self.u_star[:,0]
         self.x_trajectory[:,k,j] = np.ravel(self.x_star[:,0])
         self.stage_costs[:,k,j] = self.evaluate_stage_cost(np.ravel(self.x_star[:,0]), self.u_star[:,0])
-
+        print(self.u_trajectory[:,k,j])
+        print(self.x_trajectory[:,k,j])
         self.step_nr = 1
         if self.next is not None:
             self.next.step4(j, k)
@@ -264,9 +266,9 @@ class Agent:
         constr = []
         for k in range(self.N):
             constr +=  [x[:,k+1] == self.A@x[:,k] + self.B@u[:,k], # Dynamics
-                        u[:,k] <= 20,
-                        u[:,k] >= -20,
-                        x[1,k] >= 0, # no going backwards
+                        #u[:,k] <= 20,
+                        #u[:,k] >= -20,
+                        #x[1,k] >= 0, # no going backwards
                         x[1,k] <= 50] # speed limit
             stage_costs += cp.quad_form(x[:,k] - self.xF, self.Q) + cp.quad_form(u[:,k], self.R) # stage costs
 
@@ -279,10 +281,13 @@ class Agent:
 
         terminal_cost = cp.sum(cp.multiply(delta, np.squeeze(SS.value[0,:]))) # terminal cost
         constr += [cp.sum(delta) == 1] # only one terminal state
-        constr += [x[:,self.N] == SS[1:,:]@delta] # terminal state has to be in reduced LSS
+        constr += [x[:,self.N] == SS[1:,:]@delta]
+        #constr += [x[:,self.N] <= SS[1:,:]@delta * 1]
+        #constr += [x[:,self.N] >= SS[1:,:]@delta * 0.1]
+         # terminal state has to be in reduced LSS
         constr += [x[:,0] == np.ravel(self.x_hat[:,0])] # initial condition
 
         problem = cp.Problem(cp.Minimize(stage_costs + terminal_cost), constr)
-        problem.solve(solver=cp.GUROBI)
+        problem.solve(solver=cp.ECOS_BB, verbose = False)
 
         return x.value, u.value, problem.value, terminal_cost.value
